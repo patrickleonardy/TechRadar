@@ -74,6 +74,11 @@ RUN sed -i 's/\r$//' /entrypoint.sh.tmp && \
     chmod +x manage.py && \
     mkdir -p /app/config /app/output
 
+# Defaults for pull-only deployments. Bind-mount /app/config to customize.
+COPY config/ /app/config/
+COPY deploy/zima/config.yaml /app/config/config.yaml
+COPY deploy/zima/frequency_words.txt /app/config/frequency_words.txt
+
 ENV PYTHONUNBUFFERED=1 \
     CONFIG_PATH=/app/config/config.yaml \
     FREQUENCY_WORDS_PATH=/app/config/frequency_words.txt

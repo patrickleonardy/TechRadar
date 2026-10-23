@@ -1,134 +1,66 @@
-name: Build and Push Docker Images
+name: Publish TechRadar containers
 
 on:
   push:
-    tags:
-      - "v*" # 主项目版本
-      - "mcp-v*" # MCP 版本
+    branches: [master]
+    paths:
+      - '.github/workflows/docker.yml'
+      - 'docker/**'
+      - 'trendradar/**'
+      - 'scripts/**'
+      - 'config/**'
+      - 'deploy/zima/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
   workflow_dispatch:
-    inputs:
-      image:
-        description: "选择要构建的镜像"
-        required: true
-        default: "all"
-        type: choice
-        options:
-          - all
-          - crawler
-          - mcp
 
-env:
-  REGISTRY: docker.io
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: containers-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-crawler:
+  publish:
     runs-on: ubuntu-latest
-    # 条件：v* 标签（排除 mcp-v*）或手动触发选择 all/crawler
-    if: |
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !startsWith(github.ref, 'refs/tags/mcp-v')) ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.image == 'all' || github.event.inputs.image == 'crawler'))
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: collector
+            dockerfile: docker/Dockerfile
+          - component: codex
+            dockerfile: docker/Dockerfile.codex
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: |
-            network=host
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: wantcat/trendradar
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@v6
+      - name: Build and check image
         env:
-          BUILDKIT_PROGRESS: plain
-        with:
-          context: .
-          file: ./docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-mcp:
-    runs-on: ubuntu-latest
-    # 条件：mcp-v* 标签 或手动触发选择 all/mcp
-    if: |
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/mcp-v')) ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.image == 'all' || github.event.inputs.image == 'mcp'))
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: |
-            network=host
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract version from tag
-        id: version
+          COMPONENT: ${{ matrix.component }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/mcp-v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/mcp-v}"
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "major_minor=$(echo $VERSION | cut -d. -f1,2)" >> $GITHUB_OUTPUT
+          set -eu
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker build --build-arg TARGETARCH=amd64 \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -f "$DOCKERFILE" \
+            -t "$IMAGE:$COMPONENT-$GITHUB_SHA" -t "$IMAGE:$COMPONENT" .
+          if [ "$COMPONENT" = collector ]; then
+            docker run --rm --entrypoint python "$IMAGE:$COMPONENT-$GITHUB_SHA" \
+              -c 'import importlib.util; assert importlib.util.find_spec("litellm") is None; from trendradar.ai.client import AIClient; print("HTTP client loads; LiteLLM absent")'
           else
-            echo "version=latest" >> $GITHUB_OUTPUT
-            echo "major_minor=latest" >> $GITHUB_OUTPUT
+            docker run --rm --entrypoint codex "$IMAGE:$COMPONENT-$GITHUB_SHA" --version
+            docker run --rm "$IMAGE:$COMPONENT-$GITHUB_SHA" --help
           fi
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: wantcat/trendradar-mcp
-          tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=${{ steps.version.outputs.major_minor }}
-            type=raw,value=latest
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - name: Publish to GitHub Container Registry
         env:
-          BUILDKIT_PROGRESS: plain
-        with:
-          context: .
-          file: ./docker/Dockerfile.mcp
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -eu
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:$COMPONENT-$GITHUB_SHA"
+          docker push "$IMAGE:$COMPONENT"

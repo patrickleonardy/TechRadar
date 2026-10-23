@@ -1,0 +1,44 @@
+name: techradar
+services:
+  collector:
+    image: ghcr.io/patrickleonardy/techradar:collector
+    restart: unless-stopped
+    ports:
+      - "${TECHRADAR_BIND_IP:-127.0.0.1}:8088:8080"
+    environment:
+      TZ: Europe/Zurich
+      WEBSERVER_PORT: "8080"
+      CRON_SCHEDULE: "0 */6 * * *"
+      RUN_MODE: cron
+      IMMEDIATE_RUN: "true"
+      AI_ANALYSIS_ENABLED: "false"
+    volumes:
+      - collector-config:/app/config
+      - collector-output:/app/output
+  weekly:
+    image: ghcr.io/patrickleonardy/techradar:codex
+    profiles: [manual]
+    environment:
+      TZ: Europe/Zurich
+      CODEX_HOME: /auth
+    volumes:
+      - collector-output:/data:ro
+      - weekly-reports:/reports
+      - codex-auth:/auth
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+  reports:
+    image: ghcr.io/patrickleonardy/techradar:codex
+    restart: unless-stopped
+    entrypoint: [python3, -m, http.server, "8080", --bind, "0.0.0.0", --directory, /reports]
+    ports:
+      - "${TECHRADAR_BIND_IP:-127.0.0.1}:8089:8080"
+    volumes:
+      - weekly-reports:/reports:ro
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  collector-config:
+  collector-output:
+  weekly-reports:
+  codex-auth:
