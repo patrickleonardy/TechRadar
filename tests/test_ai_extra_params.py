@@ -1,150 +1,131 @@
-"""Regression coverage for configured LiteLLM parameters without API requests."""
+"""Test the HTTP client without importing the application's optional services."""
 
-import io
+import importlib.util
 import os
+from pathlib import Path
 import unittest
-from contextlib import redirect_stdout
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-# LiteLLM may otherwise fetch its model cost map while being imported.
-with patch.dict(os.environ, {"LITELLM_LOCAL_MODEL_COST_MAP": "True"}):
-    from trendradar.ai.client import AIClient
+import requests
+
+spec = importlib.util.spec_from_file_location(
+    "trendradar_http_client", Path(__file__).parents[1] / "trendradar/ai/client.py"
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+AIClient = module.AIClient
 
 
-class AIExtraParamsTests(unittest.TestCase):
+class AIClientTests(unittest.TestCase):
     def setUp(self):
-        env_patch = patch.dict(os.environ, {"AI_API_KEY": ""})
-        env_patch.start()
-        self.addCleanup(env_patch.stop)
-
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="mocked reply"))]
-        )
-        completion_patch = patch(
-            "trendradar.ai.client.completion", return_value=response
-        )
-        self.completion = completion_patch.start()
-        self.addCleanup(completion_patch.stop)
-
-        self.messages = [{"role": "user", "content": "Summarize this test item."}]
+        env = patch.dict(os.environ, {"AI_API_KEY": ""})
+        env.start()
+        self.addCleanup(env.stop)
         self.config = {
-            "MODEL": "test/model",
-            "API_KEY": "test-api-key",
-            "API_BASE": "https://api.example.invalid/v1",
-            "TEMPERATURE": 0.6,
-            "MAX_TOKENS": 128,
-            "TIMEOUT": 30,
+            "MODEL": "openai/organization/model",
+            "API_BASE": "https://example.invalid/v1/",
+            "API_KEY": "test-secret",
             "NUM_RETRIES": 0,
-            "FALLBACK_MODELS": ["test/backup"],
         }
-        self.expected = {
-            "model": "test/model",
-            "messages": self.messages,
-            "api_key": "test-api-key",
-            "api_base": "https://api.example.invalid/v1",
-            "temperature": 0.6,
-            "max_tokens": 128,
-            "timeout": 30,
-            "num_retries": 0,
-            "fallbacks": ["test/backup"],
-        }
+        self.session = MagicMock()
+        self.response = self.session.post.return_value.__enter__.return_value
+        self.response.status_code = 200
+        self.response.json.return_value = {"choices": [{"message": {"content": "reply"}}]}
+        session = patch.object(module.requests, "Session")
+        session.start().return_value.__enter__.return_value = self.session
+        self.addCleanup(session.stop)
+        sleep = patch.object(module.time, "sleep")
+        sleep.start()
+        self.addCleanup(sleep.stop)
 
-    def chat_params(self, overrides=None, **kwargs):
-        self.completion.reset_mock()
-        client = AIClient({**self.config, **(overrides or {})})
-        self.assertEqual(client.chat(self.messages, **kwargs), "mocked reply")
-        self.completion.assert_called_once()
-        return self.completion.call_args.kwargs
+    def test_direct_request_and_credentials(self):
+        self.assertEqual(AIClient(self.config).chat([]), "reply")
+        args, options = self.session.post.call_args
+        self.assertEqual(args, ("https://example.invalid/v1/chat/completions",))
+        self.assertEqual(options["json"]["model"], "organization/model")
+        self.assertEqual(options["headers"]["Authorization"], "Bearer test-secret")
+        self.assertFalse(options["allow_redirects"])
+        self.assertFalse(self.session.trust_env)
+        self.assertNotIn("api_key", options["json"])
 
-    def test_missing_none_or_empty_extra_params_preserve_existing_request(self):
-        for overrides in ({}, {"EXTRA_PARAMS": None}, {"EXTRA_PARAMS": {}}):
-            with self.subTest(overrides=overrides):
-                self.assertEqual(self.chat_params(overrides), self.expected)
+    def test_keyless_local_server_and_raw_model_id(self):
+        client = AIClient({**self.config, "API_BASE": "http://ollama:11434/v1", "MODEL": "org/model", "API_KEY": ""})
+        self.assertEqual(client.validate_config(), (True, ""))
+        client.chat([])
+        options = self.session.post.call_args.kwargs
+        self.assertNotIn("Authorization", options["headers"])
+        self.assertEqual(options["json"]["model"], "org/model")
 
-    def test_extra_request_parameters_and_headers_are_forwarded(self):
-        extra = {
-            "top_p": 0.8,
-            "presence_penalty": 0.0,
-            "stop": ["END"],
-            "extra_headers": {"X-Example-Trace": "test-trace"},
-        }
-        self.assertEqual(
-            self.chat_params({"EXTRA_PARAMS": extra}), {**self.expected, **extra}
-        )
+    def test_invalid_endpoint_fails_before_request(self):
+        for base in ("", "file:///tmp/model", "https://user:pass@host/v1", "https://host/v1?key=x", "https://host:bad/v1", "http://remote/v1"):
+            with self.subTest(base=base):
+                with self.assertRaises(ValueError):
+                    AIClient({**self.config, "API_BASE": base}).chat([])
+        self.session.post.assert_not_called()
 
-    def test_non_dict_extra_params_are_ignored(self):
-        for invalid in ("invalid", 42, True, ["unexpected"]):
-            with self.subTest(value=invalid), redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(
-                    self.chat_params({"EXTRA_PARAMS": invalid}), self.expected
-                )
-                self.assertIn("extra_params", output.getvalue())
+    def test_extra_fields_and_call_overrides(self):
+        client = AIClient({**self.config, "EXTRA_PARAMS": {
+            "top_p": 0.8, "model": "wrong", "messages": ["wrong"],
+            "api_base": "https://wrong.invalid/v1", "api_key": "wrong",
+            "stream": True, "extra_headers": {"X-Trace": "test"},
+        }})
+        client.chat([], top_p=0.2, temperature=0.4, max_tokens=0, timeout=5)
+        options = self.session.post.call_args.kwargs
+        self.assertEqual(options["json"], {
+            "model": "organization/model", "messages": [], "temperature": 0.4,
+            "stream": False, "top_p": 0.2,
+        })
+        self.assertEqual(options["timeout"], 5)
+        self.assertEqual(options["headers"]["X-Trace"], "test")
 
-    def test_call_kwargs_override_configured_supplemental_parameters(self):
-        extra = {
-            "top_p": 0.8,
-            "stop": ["CONFIG_END"],
-            "presence_penalty": 0.4,
-        }
-        self.assertEqual(
-            self.chat_params(
-                {"EXTRA_PARAMS": extra}, top_p=0.2, stop=["CALL_END"]
-            ),
-            {
-                **self.expected,
-                "top_p": 0.2,
-                "stop": ["CALL_END"],
-                "presence_penalty": 0.4,
-            },
-        )
+    def test_extra_headers_cannot_redirect_or_replace_auth(self):
+        for header in ("Authorization", "HOST", "Proxy-Authorization", "Content-Length"):
+            with self.subTest(header=header), self.assertRaises(ValueError):
+                AIClient({**self.config, "EXTRA_PARAMS": {"extra_headers": {header: "wrong"}}}).chat([])
+        self.session.post.assert_not_called()
 
-    def test_extra_params_cannot_replace_assembled_core_parameters(self):
-        extra = {
-            "model": "test/other",
-            "messages": [{"role": "user", "content": "Replace the request."}],
-            "api_key": "other-test-key",
-            "api_base": "https://other.example.invalid/v1",
-            "temperature": 0.1,
-            "max_tokens": 512,
-            "timeout": 1,
-            "num_retries": 3,
-            "fallbacks": ["test/other-backup"],
-        }
-        self.assertEqual(self.chat_params({"EXTRA_PARAMS": extra}), self.expected)
+    def test_redirect_is_rejected_without_following(self):
+        self.response.status_code = 302
+        with self.assertRaisesRegex(RuntimeError, "HTTP 302"):
+            AIClient(self.config).chat([])
+        self.session.post.assert_called_once()
 
-    def test_existing_core_call_overrides_still_work_without_extra_params(self):
-        call_options = {
-            "temperature": 0.1,
-            "max_tokens": 64,
-            "timeout": 5,
-            "num_retries": 2,
-        }
-        self.assertEqual(
-            self.chat_params(**call_options), {**self.expected, **call_options}
-        )
+    def test_transient_errors_retry_but_auth_failure_does_not(self):
+        self.response.status_code = 429
+        with self.assertRaisesRegex(RuntimeError, "HTTP 429"):
+            AIClient({**self.config, "NUM_RETRIES": 2}).chat([])
+        self.assertEqual(self.session.post.call_count, 3)
+        self.session.post.reset_mock()
+        self.response.status_code = 401
+        with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+            AIClient({**self.config, "NUM_RETRIES": 2}).chat([])
+        self.session.post.assert_called_once()
 
-    def test_extra_params_can_supply_optional_parameters_not_yet_assembled(self):
-        # Empty optional settings do not occupy keys in the request. Keep the
-        # PR's supplemental behavior while preserving call-argument priority.
-        extra = {
-            "api_base": "https://extra.example.invalid/v1",
-            "max_tokens": 256,
-            "fallbacks": ["test/extra-backup"],
-        }
-        actual = self.chat_params(
-            {
-                "API_BASE": "",
-                "MAX_TOKENS": 0,
-                "FALLBACK_MODELS": [],
-                "EXTRA_PARAMS": extra,
-            },
-            api_base="https://call.example.invalid/v1",
-        )
-        self.assertEqual(
-            actual,
-            {**self.expected, **extra, "api_base": "https://call.example.invalid/v1"},
-        )
+    def test_fallback_stays_on_same_endpoint(self):
+        self.response.status_code = 503
+        with self.assertRaises(RuntimeError):
+            AIClient({**self.config, "FALLBACK_MODELS": ["backup"]}).chat([])
+        calls = self.session.post.call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(c.args[0] == "https://example.invalid/v1/chat/completions" for c in calls))
+        self.assertEqual(calls[-1].kwargs["json"]["model"], "backup")
+
+    def test_errors_do_not_include_remote_body_or_exception_secrets(self):
+        self.session.post.side_effect = requests.ConnectionError("test-secret in URL")
+        with self.assertRaisesRegex(RuntimeError, "^AI endpoint connection failed.$"):
+            AIClient(self.config).chat([])
+        self.session.post.side_effect = None
+        self.response.status_code = 500
+        self.response.text = "test-secret in server error"
+        with self.assertRaisesRegex(RuntimeError, "^AI endpoint returned HTTP 500.$"):
+            AIClient(self.config).chat([])
+
+    def test_invalid_response_and_content_blocks(self):
+        self.response.json.return_value = {}
+        with self.assertRaisesRegex(RuntimeError, "invalid chat response"):
+            AIClient(self.config).chat([])
+        self.response.json.return_value = {"choices": [{"message": {"content": [{"text": "one"}, {"text": "two"}]}}]}
+        self.assertEqual(AIClient(self.config).chat([]), "one\ntwo")
 
 
 if __name__ == "__main__":

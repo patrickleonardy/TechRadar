@@ -3,7 +3,7 @@
 AI 分析器模块
 
 调用 AI 大模型对热点新闻进行深度分析
-基于 LiteLLM 统一接口，支持 100+ AI 提供商
+Uses a configured OpenAI-compatible HTTP endpoint.
 """
 
 import json

@@ -352,41 +352,14 @@ storage:
 # 8. AI 模型配置（ai_analysis / ai_translation / ai_filter 共用）
 # ===============================================================
 ai:
-  # LiteLLM 模型格式: 提供商/模型名
-  # 示例:
-  #   - deepseek/deepseek-v4-flash (DeepSeek，便宜够用，推荐)
-  #   - deepseek/deepseek-v4-pro
-  #   - openai/gpt-4o (OpenAI)
-  #   - gemini/gemini-2.5-flash (Google Gemini)
-  #   - anthropic/claude-sonnet-4-20250514 (Anthropic)
-  #   - ollama/llama3 (本地 Ollama)
-  # 完整列表: https://docs.litellm.ai/docs/providers
-  # 如果你对于看英文文档比较头疼，那么可以点击页面右下角的 【Ask AI】 ,用中文询问怎么配置
-
-  model: "deepseek/deepseek-v4-flash"
-
-  api_key: ""                       # API Key（建议使用环境变量 AI_API_KEY）
-  
-  api_base: ""                      # 自定义 API 地址（可选，绝大多数情况留空即可）
-                                    #
-                                    # ❓ 什么时候需要填？
-                                    #    当你使用的 AI 服务商不在上方支持列表中时。
-                                    #    比如某些国内 API 中转站、私有部署的服务等。
-                                    #    如果你用的是 DeepSeek、OpenAI、Gemini 等主流服务商，
-                                    #    不用填这个，留空就行。
-                                    #
-                                    # 🔧 怎么填？两步走：
-                                    #    第一步 - api_base 填写服务商给你的接口地址
-                                    #      例如: https://your-provider.com/v1
-                                    #
-                                    #    第二步 - model 前面加上 "openai/" 前缀
-                                    #      例如: openai/deepseek-ai/DeepSeek-V3
-                                    #
-                                    # 💡 为什么要加 openai/ 前缀？
-                                    #    大部分 AI 服务商都兼容同一套通用接口格式，
-                                    #    加上 openai/ 就是告诉系统"用这套通用格式去连接"，
-                                    #    这样几乎任何服务商都能接入。
-
+  # Direct OpenAI-compatible endpoint. No LiteLLM/provider routing.
+  # Use the model ID served by your server; organization/model IDs are supported.
+  model: "llama3.2:3b"
+  # Leave empty for keyless local servers; use AI_API_KEY for authenticated APIs.
+  api_key: ""
+  # In Docker, use the Ollama host's LAN IP or service name, not localhost.
+  # Include /v1. HTTPS is required for keys except on loopback.
+  api_base: "http://ollama:11434/v1"
 
   timeout: 120                      # 请求超时（秒）
 
@@ -398,10 +371,10 @@ ai:
   # 高级选项
   num_retries: 1                    # 失败重试次数
   fallback_models: []               # 备用模型列表（可选）
-                                    # 示例: ["openai/gpt-4o-mini", "openai/deepseek-ai/DeepSeek-V3"]
+                                    # Fallback model IDs must be available at the SAME endpoint.
 
   # 额外参数（一般无需修改，删掉 # 号即可启用）
-  # 会原样透传给 LiteLLM，可用于补充请求参数或自定义请求头
+  # Additional JSON fields or extra_headers; routing/authentication cannot be overridden
   # extra_params:
   #   top_p: 1.0
   #   presence_penalty: 0.0

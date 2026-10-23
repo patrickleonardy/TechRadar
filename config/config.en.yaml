@@ -353,39 +353,14 @@ storage:
 # 8. AI Model Configuration (shared by ai_analysis / ai_translation / ai_filter)
 # ===============================================================
 ai:
-  # LiteLLM model format: provider/model-name
-  # Examples:
-  #   - deepseek/deepseek-v4-flash (DeepSeek; cheap and sufficient, recommended)
-  #   - deepseek/deepseek-v4-pro
-  #   - openai/gpt-4o (OpenAI)
-  #   - gemini/gemini-2.5-flash (Google Gemini)
-  #   - anthropic/claude-sonnet-4-20250514 (Anthropic)
-  #   - ollama/llama3 (local Ollama)
-  # Full list: https://docs.litellm.ai/docs/providers
-
-  model: "deepseek/deepseek-v4-flash"
-
-  api_key: ""                       # API Key (prefer using the AI_API_KEY environment variable)
-
-  api_base: ""                      # Custom API URL (optional; leave empty in most cases)
-                                    #
-                                    # ❓ When do you need this?
-                                    #    When your AI provider is not in the supported list above.
-                                    #    For example, some API proxies, privately deployed services, etc.
-                                    #    If you use DeepSeek, OpenAI, Gemini, etc., leave it empty.
-                                    #
-                                    # 🔧 How to fill it? Two steps:
-                                    #    Step 1 — set api_base to the endpoint given by your provider
-                                    #      e.g. https://your-provider.com/v1
-                                    #
-                                    #    Step 2 — prefix the model with "openai/"
-                                    #      e.g. openai/deepseek-ai/DeepSeek-V3
-                                    #
-                                    # 💡 Why the openai/ prefix?
-                                    #    Most AI providers share a common API format.
-                                    #    Adding openai/ tells the system "connect using this common format",
-                                    #    so almost any provider can be hooked up.
-
+  # Direct OpenAI-compatible endpoint. No LiteLLM/provider routing.
+  # Use the model ID served by your server; organization/model IDs are supported.
+  model: "llama3.2:3b"
+  # Leave empty for keyless local servers; use AI_API_KEY for authenticated APIs.
+  api_key: ""
+  # In Docker, use the Ollama host's LAN IP or service name, not localhost.
+  # Include /v1. HTTPS is required for keys except on loopback.
+  api_base: "http://ollama:11434/v1"
 
   timeout: 120                      # Request timeout (seconds)
 
@@ -397,10 +372,10 @@ ai:
   # Advanced options
   num_retries: 1                    # Retry count on failure
   fallback_models: []               # Fallback model list (optional)
-                                    # Example: ["openai/gpt-4o-mini", "openai/deepseek-ai/DeepSeek-V3"]
+                                    # Fallback model IDs must be available at the SAME endpoint.
 
   # Extra params (usually no need to change; uncomment to enable)
-  # Passed through to LiteLLM as-is; useful for extra request params or headers
+  # Additional JSON fields or extra_headers; routing/authentication cannot be overridden
   # extra_params:
   #   top_p: 1.0
   #   presence_penalty: 0.0

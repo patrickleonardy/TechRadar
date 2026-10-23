@@ -1,38 +1,19 @@
 # coding=utf-8
-"""
-AI 客户端模块
-
-基于 LiteLLM 的统一 AI 模型接口
-支持 100+ AI 提供商（OpenAI、DeepSeek、Gemini、Claude、国内模型等）
-"""
+"""Direct, non-streaming OpenAI-compatible chat requests (no provider router)."""
 
 import os
+import time
+from urllib.parse import urlsplit
 from typing import Any, Dict, List
 
-from litellm import completion
+import requests
 
 
 class AIClient:
-    """统一的 AI 客户端（基于 LiteLLM）"""
+    """Send chat requests only to the explicitly configured API base URL."""
 
     def __init__(self, config: Dict[str, Any]):
-        """
-        初始化 AI 客户端
-
-        Args:
-            config: AI 配置字典
-                - MODEL: 模型标识（格式: provider/model_name）
-                - API_KEY: API 密钥
-                - API_BASE: API 基础 URL（可选）
-                - TEMPERATURE: 采样温度
-                - MAX_TOKENS: 最大生成 token 数
-                - TIMEOUT: 请求超时时间（秒）
-                - NUM_RETRIES: 重试次数（可选）
-                - FALLBACK_MODELS: 备用模型列表（可选）
-                - EXTRA_PARAMS: 透传给 LiteLLM 的额外参数（可选），如
-                  extra_headers、top_p、presence_penalty、stop 等
-        """
-        self.model = config.get("MODEL", "deepseek/deepseek-chat")
+        self.model = config.get("MODEL", "")
         self.api_key = config.get("API_KEY") or os.environ.get("AI_API_KEY", "")
         self.api_base = config.get("API_BASE", "")
         self.temperature = config.get("TEMPERATURE", 1.0)
@@ -40,94 +21,109 @@ class AIClient:
         self.timeout = config.get("TIMEOUT", 120)
         self.num_retries = config.get("NUM_RETRIES", 2)
         self.fallback_models = config.get("FALLBACK_MODELS", [])
-        # config.yaml 中 ai.extra_params 的透传参数（如自定义请求头）
         self.extra_params = config.get("EXTRA_PARAMS") or {}
         if not isinstance(self.extra_params, dict):
-            print(
-                f"[AI] 配置错误: ai.extra_params 应为字典，"
-                f"当前为 {type(self.extra_params).__name__}，已忽略"
-            )
+            print("[AI] Invalid extra_params; expected a dictionary. Ignoring it.")
             self.extra_params = {}
 
-    def chat(
-        self,
-        messages: List[Dict[str, str]],
-        **kwargs
-    ) -> str:
-        """
-        调用 AI 模型进行对话
-
-        Args:
-            messages: 消息列表，格式: [{"role": "system/user/assistant", "content": "..."}]
-            **kwargs: 额外参数，会覆盖默认配置
-
-        Returns:
-            str: AI 响应内容
-
-        Raises:
-            Exception: API 调用失败时抛出异常
-        """
-        # 构建请求参数
-        params = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "timeout": kwargs.get("timeout", self.timeout),
-            "num_retries": kwargs.get("num_retries", self.num_retries),
-        }
-
-        # 添加 API Key
-        if self.api_key:
-            params["api_key"] = self.api_key
-
-        # 添加 API Base（如果配置了）
-        if self.api_base:
-            params["api_base"] = self.api_base
-
-        # 添加 max_tokens（如果配置了且不为 0）
-        max_tokens = kwargs.get("max_tokens", self.max_tokens)
-        if max_tokens and max_tokens > 0:
-            params["max_tokens"] = max_tokens
-
-        # 添加 fallback 模型（如果配置了）
-        if self.fallback_models:
-            params["fallbacks"] = self.fallback_models
-
-        # 合并配置文件中的 extra_params（如自定义请求头 extra_headers），
-        # 再用调用方 kwargs 覆盖；两者均不覆盖上方已确定的核心参数，
-        # 因此未配置 extra_params 时行为与原先完全一致
-        for key, value in {**self.extra_params, **kwargs}.items():
-            if key not in params:
-                params[key] = value
-
-        # 调用 LiteLLM
-        response = completion(**params)
-
-        # 提取响应内容
-        # 某些模型/提供商返回 list（内容块）而非 str，统一转为 str
-        content = response.choices[0].message.content
-        if isinstance(content, list):
-            content = "\n".join(
-                item.get("text", str(item)) if isinstance(item, dict) else str(item)
-                for item in content
-            )
-        return content or ""
+    @staticmethod
+    def _model_name(model: str) -> str:
+        # Preserve actual model IDs containing slashes (e.g. organization/model).
+        for prefix in ("openai/", "ollama/", "deepseek/"):
+            if model.startswith(prefix):
+                return model[len(prefix):]
+        return model
 
     def validate_config(self) -> tuple[bool, str]:
-        """
-        验证配置是否有效
-
-        Returns:
-            tuple: (是否有效, 错误信息)
-        """
-        if not self.model:
-            return False, "未配置 AI 模型（model）"
-
-        if not self.api_key:
-            return False, "未配置 AI API Key，请在 config.yaml 或环境变量 AI_API_KEY 中设置"
-
-        # 验证模型格式（应该包含 provider/model）
-        if "/" not in self.model:
-            return False, f"模型格式错误: {self.model}，应为 'provider/model' 格式（如 'deepseek/deepseek-chat'）"
-
+        if not isinstance(self.model, str) or not self._model_name(self.model).strip():
+            return False, "Set ai.model to the model ID served by your endpoint."
+        if not isinstance(self.api_base, str) or not self.api_base.strip():
+            return False, "Set ai.api_base explicitly (e.g. http://ollama:11434/v1)."
+        try:
+            url = urlsplit(self.api_base)
+            _ = url.port  # Validate a malformed port before making a request.
+        except ValueError:
+            return False, "Invalid ai.api_base URL."
+        if (url.scheme not in ("http", "https") or not url.hostname
+                or url.username is not None or url.password is not None
+                or url.query or url.fragment):
+            return False, "ai.api_base must be an HTTP(S) base URL without credentials, query or fragment."
+        if self.api_key and url.scheme != "https" and url.hostname not in ("localhost", "127.0.0.1", "::1"):
+            return False, "Use HTTPS for API keys, or leave ai.api_key empty for a local model."
         return True, ""
+
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
+        valid, error = self.validate_config()
+        if not valid:
+            raise ValueError(error)
+        payload = {
+            "model": self._model_name(self.model),
+            "messages": messages,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "stream": False,
+        }
+        max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        if max_tokens and max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+        options = {**self.extra_params, **kwargs}
+        # Transport and routing settings cannot be replaced via extra_params.
+        reserved = {"api_key", "api_base", "base_url", "timeout", "num_retries", "fallbacks", "extra_headers", "max_tokens"}
+        for key, value in options.items():
+            if key not in payload and key not in reserved:
+                payload[key] = value
+        headers = {"Content-Type": "application/json"}
+        extra_headers = options.get("extra_headers", {})
+        if not isinstance(extra_headers, dict):
+            raise ValueError("extra_headers must be a dictionary.")
+        for key, value in extra_headers.items():
+            if key.lower() in ("authorization", "host", "proxy-authorization", "content-length", "transfer-encoding"):
+                raise ValueError("extra_headers cannot override authentication or routing headers.")
+            headers[key] = value
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        timeout = kwargs.get("timeout", self.timeout)
+        retries = max(0, int(kwargs.get("num_retries", self.num_retries)))
+        models = [self.model, *self.fallback_models]
+        failure = "AI endpoint request failed."
+        for model in models:
+            payload["model"] = self._model_name(model)
+            for attempt in range(retries + 1):
+                retryable = False
+                try:
+                    # Do not forward credentials to a redirect target or use
+                    # ambient proxy/.netrc credentials from the host process.
+                    with requests.Session() as session:
+                        session.trust_env = False
+                        with session.post(
+                            self.api_base.rstrip("/") + "/chat/completions",
+                            json=payload, headers=headers, timeout=timeout,
+                            allow_redirects=False,
+                        ) as response:
+                            status = response.status_code
+                            if status != 200:
+                                failure = f"AI endpoint returned HTTP {status}."
+                                retryable = status in (408, 429) or status >= 500
+                            else:
+                                try:
+                                    content = response.json()["choices"][0]["message"]["content"]
+                                    if isinstance(content, list):
+                                        content = "\n".join(
+                                            item.get("text", "") for item in content
+                                            if isinstance(item, dict) and isinstance(item.get("text", ""), str)
+                                        )
+                                    if content is None:
+                                        return ""
+                                    if not isinstance(content, str):
+                                        raise ValueError("Invalid content type")
+                                    return content
+                                except (ValueError, KeyError, IndexError, TypeError):
+                                    failure = "AI endpoint returned an invalid chat response."
+                except requests.RequestException:
+                    # Never include server bodies or exception text: either can
+                    # contain authorization headers, prompts, or other secrets.
+                    failure = "AI endpoint connection failed."
+                    retryable = True
+                if not retryable or attempt == retries:
+                    break
+                time.sleep(min(2 ** attempt, 8))
+        raise RuntimeError(failure) from None
