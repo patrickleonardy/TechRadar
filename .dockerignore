@@ -33,3 +33,8 @@ _image/
 .env.*.local
 version
 index.html
+
+# Keep runner credentials and local artifacts out of build contexts.
+.venv/
+weekly-reports/
+.techradar-codex/

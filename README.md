@@ -1,3 +1,5 @@
+> **Weekly Codex briefing:** Use your saved ChatGPT login for a weekly report with archived source records. See [Codex CLI setup](docs/codex-weekly.md).
+
 > **Local modification:** LiteLLM has been replaced with direct OpenAI-compatible HTTP calls. Build this checkout rather than using upstream images. See [setup and compatibility notes](docs/without-litellm.md). Upstream instructions below may still describe provider routing that this branch no longer supports.
 
 <div align="center" id="trendradar">

@@ -1,0 +1,41 @@
+name: techradar
+services:
+  collector:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      args:
+        TARGETARCH: amd64
+    image: techradar-collector:local
+    restart: unless-stopped
+    ports:
+      - "${TECHRADAR_BIND_IP:-127.0.0.1}:8088:8080"
+    environment:
+      TZ: Europe/Zurich
+      WEBSERVER_PORT: "8080"
+      CRON_SCHEDULE: "0 */6 * * *"
+      RUN_MODE: cron
+      IMMEDIATE_RUN: "true"
+      AI_ANALYSIS_ENABLED: "false"
+    volumes:
+      - ../../config:/app/config:ro
+      - ./config.yaml:/app/config/config.yaml:ro
+      - ./frequency_words.txt:/app/config/frequency_words.txt:ro
+      - ${TECHRADAR_DATA_DIR:-/DATA/AppData/techradar}/output:/app/output
+  weekly:
+    profiles: [manual]
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.codex
+    image: techradar-codex:local
+    environment:
+      TZ: Europe/Zurich
+      CODEX_HOME: /auth
+    volumes:
+      - ${TECHRADAR_DATA_DIR:-/DATA/AppData/techradar}/output:/data:ro
+      - ${TECHRADAR_DATA_DIR:-/DATA/AppData/techradar}/output/weekly:/reports
+      - codex-auth:/auth
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  codex-auth:

@@ -1,0 +1,22 @@
+# Run from the repository root with:
+# docker compose -f docker/docker-compose-codex.yml run --rm weekly --help
+services:
+  weekly:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.codex
+    image: techradar-codex:local
+    environment:
+      TZ: Europe/Zurich
+      CODEX_HOME: /auth
+    volumes:
+      - ../output:/data:ro
+      - ../weekly-reports:/reports
+      - codex-auth:/auth
+    # No ports, host Docker socket, or unrelated home-directory mounts.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  codex-auth:

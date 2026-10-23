@@ -1,0 +1,7 @@
+
+# Local runner reports, credentials and Python environments
+weekly-reports/
+.techradar-codex/
+.venv/
+__pycache__/
+*.py[cod]

@@ -1,0 +1,14 @@
+# Standalone weekly runner: no TrendRadar Python dependencies or LiteLLM.
+FROM node:22-bookworm-slim
+ARG CODEX_VERSION=0.163.0
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates tzdata git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global @openai/codex@${CODEX_VERSION} \
+    && npm cache clean --force
+WORKDIR /runner
+COPY scripts/weekly_codex.py /runner/weekly_codex.py
+RUN mkdir -p /auth /reports && chown node:node /auth /reports /runner
+USER node
+ENV CODEX_HOME=/auth
+ENTRYPOINT ["python3", "/runner/weekly_codex.py"]
+CMD ["--data-dir", "/data", "--archive-dir", "/reports", "--codex-home", "/auth"]
