@@ -7,7 +7,7 @@ not upstream TrendRadar images. There is no MCP service or per-article AI.
 ## Build and start collection
 
 ```sh
-export TECHRADAR_BIND_IP=100.75.162.16
+export TECHRADAR_BIND_IP=YOUR_SERVER_IP
 export TECHRADAR_DATA_DIR=/DATA/AppData/techradar
 docker compose -f deploy/zima/compose.yml build collector weekly
 # Create writable reports directory for the unprivileged weekly runner.
@@ -17,7 +17,7 @@ docker compose -f deploy/zima/compose.yml up -d collector
 docker compose -f deploy/zima/compose.yml logs --tail=80 collector
 ```
 
-Open http://100.75.162.16:8088/ to browse collection reports and saved briefings.
+Open http://YOUR_SERVER_IP:8088/ to browse collection reports and saved briefings.
 Binding to that IP requires the address to exist on the ZimaOS host. If Docker
 reports "cannot assign requested address", inspect the host addresses and use
 its actual interface address. Do not change it to 0.0.0.0 by default.
